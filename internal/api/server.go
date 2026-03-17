@@ -12,22 +12,24 @@ import (
 )
 
 type Server struct {
-	cfg  config.Config
-	svm  *swp.SwpClient
-	db   *postgres.DB
-	pub  ed25519.PublicKey
-	priv ed25519.PrivateKey
+	cfg       config.Config
+	svm       *swp.SwpClient
+	db        *postgres.DB
+	pub       ed25519.PublicKey
+	priv      ed25519.PrivateKey
+	clientPub ed25519.PublicKey
 
 	locker *config.ContractLocker
 }
 
-func NewServer(cfg config.Config, svm *swp.SwpClient, db *postgres.DB, pub []byte, priv []byte, locker *config.ContractLocker) *Server {
+func NewServer(cfg config.Config, svm *swp.SwpClient, db *postgres.DB, pub []byte, priv []byte, clientPub []byte, locker *config.ContractLocker) *Server {
 	return &Server{
 		cfg,
 		svm,
 		db,
 		pub,
 		priv,
+		clientPub,
 		locker,
 	}
 }

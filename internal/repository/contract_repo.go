@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/peiblow/eeapi/internal/database/postgres"
+	"github.com/peiblow/eeapi/internal/schema"
 	contracts "github.com/peiblow/eeapi/internal/schema"
 	"github.com/peiblow/eeapi/internal/swp"
 )
@@ -122,4 +123,29 @@ func (r *PsqlContractRepository) GetContractArtifactByHash(ctx context.Context, 
 	meta.Bytecode = bytecode
 
 	return &meta, nil
+}
+
+func (r *PsqlContractRepository) GetBlocksByContextID(ctx context.Context, contextID string) ([]*schema.Block, error) {
+	query := `
+		SELECT hash, context_id, block_index, timestamp
+		FROM blocks
+		WHERE context_id = $1
+		ORDER BY block_index ASC
+	`
+	rows, err := r.db.QueryContext(ctx, query, contextID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var blocks []*schema.Block
+	for rows.Next() {
+		var block schema.Block
+		if err := rows.Scan(&block.Hash, &block.ContextID, &block.BlockIndex, &block.Timestamp); err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, &block)
+	}
+
+	return blocks, nil
 }

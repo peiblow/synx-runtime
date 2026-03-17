@@ -59,6 +59,7 @@ type ExecPayload struct {
 	ContractArtifact ArtifactMetadata `json:"contract_artifact"`
 	Function         string           `json:"function"`
 	Args             map[string]any   `json:"args"`
+	ContextId        string           `json:"context_id,omitempty"`
 }
 
 type ExecResponse struct {

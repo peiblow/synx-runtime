@@ -23,6 +23,7 @@ import (
 type ContractService interface {
 	DeployContract(ctx context.Context, payload *swp.DeployPayload) (*swp.WireResponse, error)
 	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*swp.WireResponse, error)
+	TraceContext(ctx context.Context, contextID string) (*TraceOutput, error)
 }
 
 type contractService struct {
@@ -32,6 +33,20 @@ type contractService struct {
 	privKey   []byte
 	pubKey    []byte
 	locker    *config.ContractLocker
+}
+
+type TraceStep struct {
+	Function      string `json:"function"`
+	ExecutionHash string `json:"executionHash"`
+	ParentHash    string `json:"parentHash"`
+	ContractID    string `json:"contract"`
+	Timestamp     int64  `json:"executedAt"`
+}
+
+type TraceOutput struct {
+	ContextID string      `json:"contextId"`
+	Status    string      `json:"status"`
+	Steps     []TraceStep `json:"steps"`
 }
 
 func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, privKey []byte, pubKey []byte, locker *config.ContractLocker) ContractService {
@@ -202,6 +217,7 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		ContractID:   contractID,
 		FunctionName: payload.Function,
 		Journal:      encryptedJournal,
+		ContextID:    payload.ContextId,
 	}
 
 	if err := blocks.VerifyBlock(*previousBlock, *block, journalBytes, s.pubKey); err != nil {
@@ -217,4 +233,28 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 
 	slog.Info("Contract executed successfully", "contract_hash", respData.ArtifactHash, "function", respData.Function, "exec_price", respData.ExecPrice)
 	return &resp, nil
+}
+
+func (s *contractService) TraceContext(ctx context.Context, contextID string) (*TraceOutput, error) {
+	blocks, err := s.blockDB.GetBlocksByContextID(ctx, contextID)
+	if err != nil {
+		return nil, err
+	}
+
+	steps := make([]TraceStep, len(blocks))
+	for i, block := range blocks {
+		steps[i] = TraceStep{
+			Function:      block.FunctionName,
+			ExecutionHash: block.Hash,
+			ParentHash:    block.PreviousHash,
+			ContractID:    block.ContractID,
+			Timestamp:     block.Timestamp,
+		}
+	}
+
+	return &TraceOutput{
+		ContextID: contextID,
+		Status:    "COMPLETED",
+		Steps:     steps,
+	}, nil
 }

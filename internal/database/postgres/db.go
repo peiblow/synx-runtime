@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"database/sql"
+	"os"
 
 	_ "github.com/lib/pq"
 )
@@ -11,7 +12,10 @@ type DB struct {
 }
 
 func Open() (*DB, error) {
-	dsn := "postgresql://postgres:postgres@localhost:5432/eeapi?sslmode=disable"
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgresql://postgres:postgres@localhost:5432/eeapi?sslmode=disable"
+	}
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {

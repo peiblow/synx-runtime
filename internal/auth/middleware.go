@@ -1,8 +1,8 @@
 package auth
 
 import (
-	"context"
 	"crypto/ed25519"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -16,7 +16,6 @@ const (
 func JWTMiddleware(publicKey ed25519.PublicKey) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
@@ -29,14 +28,14 @@ func JWTMiddleware(publicKey ed25519.PublicKey) func(http.Handler) http.Handler 
 				return
 			}
 
-			claims, err := ParseToken(parts[1], publicKey)
+			_, err := ParseToken(parts[1], publicKey)
 			if err != nil {
+				slog.Error("Invalid token", "error", err) // ← adiciona esse log
 				http.Error(w, "Invalid token", http.StatusUnauthorized)
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), ContextUserIDKey, claims.UserID)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r)
 		})
 	}
 }

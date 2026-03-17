@@ -1,11 +1,12 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"log/slog"
 	"os"
 
 	"github.com/peiblow/eeapi/internal/api"
-	"github.com/peiblow/eeapi/internal/auth"
 	"github.com/peiblow/eeapi/internal/config"
 	"github.com/peiblow/eeapi/internal/database/postgres"
 	"github.com/peiblow/eeapi/internal/keys"
@@ -13,7 +14,17 @@ import (
 )
 
 func main() {
-	svm := swp.NewSwpClient("localhost:8332")
+	vvmHost := os.Getenv("VVM_HOST")
+	if vvmHost == "" {
+		vvmHost = "localhost"
+	}
+
+	vvmPort := os.Getenv("VVM_PORT")
+	if vvmPort == "" {
+		vvmPort = "8332"
+	}
+
+	svm := swp.NewSwpClient(vvmHost + ":" + vvmPort)
 	defer svm.Close()
 
 	if err := svm.Connect(); err != nil {
@@ -48,14 +59,11 @@ func main() {
 
 	locker := config.NewContractLocker()
 
-	server := api.NewServer(cfg, svm, db, pub, priv, locker)
+	pubKeyHex := os.Getenv("SYNX_PUBLIC_KEY")
+	pubKeyBytes, _ := hex.DecodeString(pubKeyHex)
+	clientPubKey := ed25519.PublicKey(pubKeyBytes[len(pubKeyBytes)-32:])
 
-	token, err := auth.GenerateJWT(priv)
-	if err != nil {
-		slog.Error("Failed to generate JWT token", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("Generated JWT token", "token", token)
+	server := api.NewServer(cfg, svm, db, pub, priv, clientPubKey, locker)
 
 	if err := server.Run(); err != nil {
 		slog.Error("Server failed to start", "error", err)

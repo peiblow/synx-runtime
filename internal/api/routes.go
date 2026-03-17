@@ -25,19 +25,13 @@ func (s *Server) mount() http.Handler {
 		w.Write([]byte("OK"))
 	})
 
-	// authHandler := handlers.NewAuthHandler(service.NewUserService(s.db))
-
-	// r.Route("/auth", func(r chi.Router) {
-	// 	r.Post("/login", authHandler.Login)
-	// 	r.Post("/register", authHandler.Register)
-	// })
-
 	r.Route("/", func(r chi.Router) {
-		r.Use(auth.JWTMiddleware(s.pub))
+		r.Use(auth.JWTMiddleware(s.clientPub))
 
 		contractSvc := service.NewContractService(s.svm, s.db, s.priv, s.pub, s.locker)
 		r.Post("/contracts/deploy", handlers.DeployHandler(contractSvc))
 		r.Post("/contracts/{id}/execute", handlers.ExecHandler(contractSvc))
+		r.Get("/trace/{contextId}", handlers.TraceHandler(contractSvc))
 	})
 
 	return r

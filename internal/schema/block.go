@@ -10,4 +10,5 @@ type Block struct {
 	ContractID   string `json:"contract_id"`
 	FunctionName string `json:"function_name"`
 	Journal      []byte `json:"journal"`
+	ContextID    string `json:"context_id"`
 }

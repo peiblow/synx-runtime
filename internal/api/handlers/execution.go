@@ -23,9 +23,12 @@ func ExecHandler(svc service.ContractService) http.HandlerFunc {
 
 		var req swp.ExecPayload
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			slog.Error("Invalid request payload", "error", err)
 			http.Error(w, "Invalid request payload", http.StatusBadRequest)
 			return
 		}
+
+		slog.Info("Executing contract", "id", id, "function", req.Function, "args", req.Args, "contextId", req.ContextId)
 
 		result, err := svc.ExecuteContract(r.Context(), id, &req)
 		if err != nil {
