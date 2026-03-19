@@ -22,7 +22,7 @@ import (
 
 type ContractService interface {
 	DeployContract(ctx context.Context, payload *swp.DeployPayload) (*swp.WireResponse, error)
-	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*swp.WireResponse, error)
+	ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error)
 	TraceContext(ctx context.Context, contextID string) (*TraceOutput, error)
 }
 
@@ -33,20 +33,6 @@ type contractService struct {
 	privKey   []byte
 	pubKey    []byte
 	locker    *config.ContractLocker
-}
-
-type TraceStep struct {
-	Function      string `json:"function"`
-	ExecutionHash string `json:"executionHash"`
-	ParentHash    string `json:"parentHash"`
-	ContractID    string `json:"contract"`
-	Timestamp     int64  `json:"executedAt"`
-}
-
-type TraceOutput struct {
-	ContextID string      `json:"contextId"`
-	Status    string      `json:"status"`
-	Steps     []TraceStep `json:"steps"`
 }
 
 func NewContractService(swpClient *swp.SwpClient, db *postgres.DB, privKey []byte, pubKey []byte, locker *config.ContractLocker) ContractService {
@@ -66,6 +52,25 @@ type ArtifactMetadata struct {
 	FunctionName map[int]string         `json:"function_name"`
 	Types        map[string]interface{} `json:"types"`
 	InitStorage  map[string]interface{} `json:"init_storage"`
+}
+
+type ExecuteResult struct {
+	BlockHash string
+	Response  *swp.WireResponse
+}
+
+type TraceStep struct {
+	Function      string `json:"function"`
+	ExecutionHash string `json:"executionHash"`
+	ParentHash    string `json:"parentHash"`
+	ContractID    string `json:"contract"`
+	Timestamp     int64  `json:"executedAt"`
+}
+
+type TraceOutput struct {
+	ContextID string      `json:"contextId"`
+	Status    string      `json:"status"`
+	Steps     []TraceStep `json:"steps"`
 }
 
 func (s *contractService) DeployContract(ctx context.Context, payload *swp.DeployPayload) (*swp.WireResponse, error) {
@@ -128,7 +133,7 @@ func (s *contractService) DeployContract(ctx context.Context, payload *swp.Deplo
 	return &resp, nil
 }
 
-func (s *contractService) ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*swp.WireResponse, error) {
+func (s *contractService) ExecuteContract(ctx context.Context, contractID string, payload *swp.ExecPayload) (*ExecuteResult, error) {
 	s.locker.Lock(contractID)
 	defer s.locker.Unlock(contractID)
 
@@ -137,13 +142,31 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 
 	contract, err := s.db.GetContractByID(ctx, contractID)
 	if err != nil {
-		return nil, err
+		slog.Error("Failed to retrieve contract", "contract_id", contractID, "error", err)
+		return &ExecuteResult{
+			BlockHash: "",
+			Response: &swp.WireResponse{
+				Type:    swp.EXEC,
+				ID:      uuid.New().String(),
+				Success: false,
+				Error:   "Failed to retrieve contract: " + err.Error(),
+			},
+		}, err
 	}
 
 	slog.Info("Retrieving contract artifact", "artifact_hash", contract.ArtifactHash)
 	artifact, err := s.db.GetContractArtifactByHash(ctx, contract.ArtifactHash)
 	if err != nil {
-		return nil, err
+		slog.Error("Failed to retrieve contract artifact", "artifact_hash", contract.ArtifactHash, "error", err)
+		return &ExecuteResult{
+			BlockHash: "",
+			Response: &swp.WireResponse{
+				Type:    swp.EXEC,
+				ID:      uuid.New().String(),
+				Success: false,
+				Error:   "Failed to retrieve contract artifact: " + err.Error(),
+			},
+		}, err
 	}
 
 	msg := swp.WireMesage{
@@ -159,11 +182,27 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 
 	var resp swp.WireResponse
 	if err := s.swpClient.Send(msg, &resp); err != nil {
-		return nil, err
+		return &ExecuteResult{
+			BlockHash: "",
+			Response: &swp.WireResponse{
+				Type:    swp.EXEC,
+				ID:      msg.ID,
+				Success: false,
+				Error:   "Failed to execute contract: " + err.Error(),
+			},
+		}, err
 	}
 
 	if resp.Success == false {
-		return &resp, fmt.Errorf("contract execution failed: %s", string(resp.Error))
+		return &ExecuteResult{
+			BlockHash: "",
+			Response: &swp.WireResponse{
+				Type:    swp.EXEC,
+				ID:      msg.ID,
+				Success: false,
+				Error:   "Contract execution failed: " + string(resp.Error),
+			},
+		}, fmt.Errorf("contract execution failed: %s", string(resp.Error))
 	}
 
 	var respData swp.ExecResponse
@@ -232,7 +271,10 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	slog.Info("Execution block saved successfully", "block_hash", block.Hash)
 
 	slog.Info("Contract executed successfully", "contract_hash", respData.ArtifactHash, "function", respData.Function, "exec_price", respData.ExecPrice)
-	return &resp, nil
+	return &ExecuteResult{
+		BlockHash: blockHash,
+		Response:  &resp,
+	}, nil
 }
 
 func (s *contractService) TraceContext(ctx context.Context, contextID string) (*TraceOutput, error) {

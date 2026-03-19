@@ -11,10 +11,10 @@ import (
 )
 
 type ExecApiResponse struct {
-	id       string                   `json:"id"`
-	Price    int                      `json:"price"`
-	Function string                   `json:"function"`
-	Journal  []map[string]interface{} `json:"journal"`
+	ExecutionHash string `json:"executionHash"`
+	Function      string `json:"function"`
+	Success       bool   `json:"success"`
+	ContextId     string `json:"contextId"`
 }
 
 func ExecHandler(svc service.ContractService) http.HandlerFunc {
@@ -37,14 +37,19 @@ func ExecHandler(svc service.ContractService) http.HandlerFunc {
 			return
 		}
 
-		var resp ExecApiResponse
-		if err := json.Unmarshal(result.Data, &resp); err != nil {
+		var coreResp swp.ExecResponse
+		if err := json.Unmarshal(result.Response.Data, &coreResp); err != nil {
 			http.Error(w, "Failed to parse response: "+err.Error(), http.StatusInternalServerError)
 			slog.Error("Failed to parse response", "error", err)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		json.NewEncoder(w).Encode(ExecApiResponse{
+			ExecutionHash: result.BlockHash,
+			Function:      coreResp.Function,
+			Success:       result.Response.Success,
+			ContextId:     req.ContextId,
+		})
 	}
 }
