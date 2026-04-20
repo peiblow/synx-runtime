@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,6 +57,7 @@ type ArtifactMetadata struct {
 
 type ExecuteResult struct {
 	BlockHash string
+	Events    []interface{}
 	Response  *swp.WireResponse
 }
 
@@ -71,6 +73,13 @@ type TraceOutput struct {
 	ContextID string      `json:"contextId"`
 	Status    string      `json:"status"`
 	Steps     []TraceStep `json:"steps"`
+}
+
+type EnrichedJournal struct {
+	Events []interface{}          `json:"events"`
+	Args   map[string]interface{} `json:"args"`
+	Trace  []swp.TraceLog         `json:"trace"`
+	Audit  []swp.AuditLog         `json:"audit"`
 }
 
 func (s *contractService) DeployContract(ctx context.Context, payload *swp.DeployPayload) (*swp.WireResponse, error) {
@@ -137,36 +146,58 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	s.locker.Lock(contractID)
 	defer s.locker.Unlock(contractID)
 
+	executionStart := time.Now().UTC()
+	auditLogs := []swp.AuditLog{{
+		Time:  executionStart.Format("15:04:05.000"),
+		Event: "Execution requested",
+		Actor: payload.CallerID,
+	}}
+	traceLogs := []swp.TraceLog{}
+
 	slog.Info("Executing contract", "contract_id", contractID, "function", payload.Function)
 	timestamp := time.Now().UTC().UnixMilli()
 
+	// ── contract.load ─────────────────────────────────────────────────────────
+	stepStart := time.Now()
 	contract, err := s.db.GetContractByID(ctx, contractID)
 	if err != nil {
-		slog.Error("Failed to retrieve contract", "contract_id", contractID, "error", err)
 		return &ExecuteResult{
 			BlockHash: "",
-			Response: &swp.WireResponse{
-				Type:    swp.EXEC,
-				ID:      uuid.New().String(),
-				Success: false,
-				Error:   "Failed to retrieve contract: " + err.Error(),
-			},
+			Response:  &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: "Failed to retrieve contract: " + err.Error()},
 		}, err
 	}
+	traceLogs = append(traceLogs, swp.TraceLog{Step: "contract.load", Msg: fmt.Sprintf("Contract loaded: %s", contractID), DurationMs: time.Since(stepStart).Milliseconds()})
+	auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Contract loaded: %s", contract.ArtifactHash), Actor: "system"})
 
-	slog.Info("Retrieving contract artifact", "artifact_hash", contract.ArtifactHash)
+	// ── artifact.load ─────────────────────────────────────────────────────────
+	stepStart = time.Now()
 	artifact, err := s.db.GetContractArtifactByHash(ctx, contract.ArtifactHash)
 	if err != nil {
 		slog.Error("Failed to retrieve contract artifact", "artifact_hash", contract.ArtifactHash, "error", err)
 		return &ExecuteResult{
 			BlockHash: "",
-			Response: &swp.WireResponse{
-				Type:    swp.EXEC,
-				ID:      uuid.New().String(),
-				Success: false,
-				Error:   "Failed to retrieve contract artifact: " + err.Error(),
-			},
+			Response:  &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: "Failed to retrieve contract artifact: " + err.Error()},
 		}, err
+	}
+	traceLogs = append(traceLogs, swp.TraceLog{Step: "artifact.load", Msg: fmt.Sprintf("Artifact loaded: %s", contract.ArtifactHash), DurationMs: time.Since(stepStart).Milliseconds()})
+
+	// ── VVM execute ───────────────────────────────────────────────────────────
+	if payload.ContextId != "" {
+		finalBlock, err := s.blockDB.GetFinalBlockByContextID(ctx, payload.ContextId)
+		if err == nil && finalBlock != nil {
+			reason := ""
+			if finalBlock.FunctionName == "pow" {
+				reason = "context already finalized with 'pow'"
+			} else if finalBlock.Status == "rejected" {
+				reason = "context already rejected — start a new context"
+			}
+			if reason != "" {
+				return &ExecuteResult{
+					BlockHash: "",
+					Response:  &swp.WireResponse{Type: swp.EXEC, ID: uuid.New().String(), Success: false, Error: reason},
+				}, fmt.Errorf(reason)
+			}
+		}
 	}
 
 	msg := swp.WireMesage{
@@ -180,35 +211,15 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		},
 	}
 
+	stepStart = time.Now()
 	var resp swp.WireResponse
 	if err := s.swpClient.Send(msg, &resp); err != nil {
 		return &ExecuteResult{
 			BlockHash: "",
-			Response: &swp.WireResponse{
-				Type:    swp.EXEC,
-				ID:      msg.ID,
-				Success: false,
-				Error:   "Failed to execute contract: " + err.Error(),
-			},
+			Response:  &swp.WireResponse{Type: swp.EXEC, ID: msg.ID, Success: false, Error: "Failed to execute contract: " + err.Error()},
 		}, err
 	}
-
-	if resp.Success == false {
-		return &ExecuteResult{
-			BlockHash: "",
-			Response: &swp.WireResponse{
-				Type:    swp.EXEC,
-				ID:      msg.ID,
-				Success: false,
-				Error:   "Contract execution failed: " + string(resp.Error),
-			},
-		}, fmt.Errorf("contract execution failed: %s", string(resp.Error))
-	}
-
-	var respData swp.ExecResponse
-	if err := json.Unmarshal(resp.Data, &respData); err != nil {
-		return nil, err
-	}
+	execDuration := time.Since(stepStart).Milliseconds()
 
 	previousBlock, err := s.blockDB.GetLastContractBlock(ctx, contractID)
 	if err != nil {
@@ -216,26 +227,54 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		return nil, err
 	}
 
-	journalBytes, err := json.Marshal(respData.Journal)
+	// ── determina status ──────────────────────────────────────────────────────
+	blockStatus := "approved"
+	failedReason := ""
+
+	if !resp.Success {
+		blockStatus = "rejected"
+		failedReason = extractFailedReason(string(resp.Error))
+		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function failed: %s — %s", payload.Function, failedReason), Actor: "vvm"})
+		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' failed: %s", payload.Function, failedReason), DurationMs: execDuration})
+	} else {
+		auditLogs = append(auditLogs, swp.AuditLog{Time: time.Now().UTC().Format("15:04:05.000"), Event: fmt.Sprintf("Function executed: %s", payload.Function), Actor: "vvm"})
+		traceLogs = append(traceLogs, swp.TraceLog{Step: payload.Function, Msg: fmt.Sprintf("Function '%s' executed successfully", payload.Function), DurationMs: execDuration})
+	}
+
+	// ── journal ───────────────────────────────────────────────────────────────
+	var journalEvents []interface{}
+	var artifactHash string
+	if resp.Success {
+		var respData swp.ExecResponse
+		if err := json.Unmarshal(resp.Data, &respData); err != nil {
+			return nil, err
+		}
+		journalEvents = respData.Journal
+		artifactHash = respData.ArtifactHash
+	}
+
+	enrichedJournal := EnrichedJournal{
+		Events: journalEvents,
+		Args:   payload.Args,
+		Trace:  traceLogs,
+		Audit:  auditLogs,
+	}
+
+	journalBytes, err := json.Marshal(enrichedJournal)
 	if err != nil {
 		slog.Error("Failed to marshal journal", "error", err)
 		return nil, err
 	}
 
+	// ── hashes + assinatura ───────────────────────────────────────────────────
 	journalHashRaw := sha256.Sum256(append(journalBytes, []byte(fmt.Sprintf("%d", timestamp))...))
 	journalHash := "0x" + hex.EncodeToString(journalHashRaw[:])
 
-	blockData := fmt.Sprintf(
-		"%d|%s|%s|%s|%s|%s",
-		timestamp,
-		previousBlock.Hash,
-		journalHash,
-		contractID,
-		payload.Function,
-		respData.ArtifactHash,
+	blockData := fmt.Sprintf("%d|%s|%s|%s|%s|%s",
+		timestamp, previousBlock.Hash, journalHash, contractID, payload.Function, artifactHash,
 	)
-	blocHashRaw := sha256.Sum256([]byte(blockData))
-	blockHash := "0x" + hex.EncodeToString(blocHashRaw[:])
+	blockHashRaw := sha256.Sum256([]byte(blockData))
+	blockHash := "0x" + hex.EncodeToString(blockHashRaw[:])
 
 	encryptedJournal, err := keys.EncryptJournal(journalBytes, s.privKey)
 	if err != nil {
@@ -243,9 +282,9 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		return nil, err
 	}
 
-	signature := ed25519.Sign(s.privKey, blocHashRaw[:])
+	signature := ed25519.Sign(s.privKey, blockHashRaw[:])
 
-	slog.Info("Saving execution block", "block_hash", blockHash, "previous_hash", previousBlock.Hash, "journal_hash", journalHash, "contract_id", contractID, "function", payload.Function)
+	// ── salva block (sempre — sucesso ou falha do VVM) ────────────────────────
 	block := &schema.Block{
 		BlockIndex:   previousBlock.BlockIndex + 1,
 		Hash:         blockHash,
@@ -257,12 +296,18 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 		FunctionName: payload.Function,
 		Journal:      encryptedJournal,
 		ContextID:    payload.ContextId,
+		Status:       blockStatus,
+		FailedReason: failedReason,
 	}
 
-	if err := blocks.VerifyBlock(*previousBlock, *block, journalBytes, s.pubKey); err != nil {
-		return nil, err
+	if resp.Success {
+		if err := blocks.VerifyBlock(*previousBlock, *block, journalBytes, s.pubKey); err != nil {
+			return nil, err
+		}
+		slog.Info("Block verification successful", "block_hash", block.Hash)
 	}
-	slog.Info("Block verification successful", "block_hash", block.Hash)
+
+	slog.Info("Saving execution block", "block_hash", blockHash, "status", blockStatus, "function", payload.Function)
 
 	if err := s.blockDB.SaveBlock(ctx, block); err != nil {
 		slog.Error("Failed to save execution block", "error", err)
@@ -270,9 +315,25 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	}
 	slog.Info("Execution block saved successfully", "block_hash", block.Hash)
 
-	slog.Info("Contract executed successfully", "contract_hash", respData.ArtifactHash, "function", respData.Function, "exec_price", respData.ExecPrice)
+	// ── retorno ───────────────────────────────────────────────────────────────
+	if !resp.Success {
+		return &ExecuteResult{
+			BlockHash: blockHash,
+			Events:    nil,
+			Response:  &swp.WireResponse{Type: swp.EXEC, ID: msg.ID, Success: false, Error: resp.Error},
+		}, fmt.Errorf("contract execution failed: %s", string(resp.Error))
+	}
+
+	var respData swp.ExecResponse
+	if err := json.Unmarshal(resp.Data, &respData); err != nil {
+		return nil, err
+	}
+
+	slog.Info("Contract executed successfully", "contract_hash", respData.ArtifactHash, "function", respData.Function, "status", blockStatus)
+
 	return &ExecuteResult{
 		BlockHash: blockHash,
+		Events:    respData.Journal,
 		Response:  &resp,
 	}, nil
 }
@@ -299,4 +360,16 @@ func (s *contractService) TraceContext(ctx context.Context, contextID string) (*
 		Status:    "COMPLETED",
 		Steps:     steps,
 	}, nil
+}
+
+func extractFailedReason(rawError string) string {
+	s := rawError
+	if idx := strings.Index(s, "[execution error: "); idx != -1 {
+		s = s[idx+len("[execution error: "):]
+		s = strings.TrimSuffix(strings.TrimSpace(s), "]")
+	}
+	s = strings.TrimPrefix(s, "map[Value:")
+	s = strings.TrimSuffix(s, "]")
+
+	return strings.TrimSpace(s)
 }

@@ -11,4 +11,6 @@ type Block struct {
 	FunctionName string `json:"function_name"`
 	Journal      []byte `json:"journal"`
 	ContextID    string `json:"context_id"`
+	Status       string `json:"status"`
+	FailedReason string `json:"failed_reason"`
 }

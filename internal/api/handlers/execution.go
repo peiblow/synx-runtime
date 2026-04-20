@@ -11,10 +11,11 @@ import (
 )
 
 type ExecApiResponse struct {
-	ExecutionHash string `json:"executionHash"`
-	Function      string `json:"function"`
-	Success       bool   `json:"success"`
-	ContextId     string `json:"contextId"`
+	ExecutionHash string        `json:"executionHash"`
+	Function      string        `json:"function"`
+	Success       bool          `json:"success"`
+	ContextId     string        `json:"contextId"`
+	Events        []interface{} `json:"events"`
 }
 
 func ExecHandler(svc service.ContractService) http.HandlerFunc {
@@ -50,6 +51,7 @@ func ExecHandler(svc service.ContractService) http.HandlerFunc {
 			Function:      coreResp.Function,
 			Success:       result.Response.Success,
 			ContextId:     req.ContextId,
+			Events:        result.Events,
 		})
 	}
 }

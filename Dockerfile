@@ -1,22 +1,36 @@
-# Stage 1 — Build
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
-RUN apk add --no-cache git ca-certificates tzdata
+
+RUN apk add --no-cache ca-certificates tzdata
+RUN adduser -D -u 1001 synx
+
 COPY go.mod go.sum ./
 RUN go mod download
+
 COPY . .
+
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-w -s" -o /bin/eeapi ./cmd/eeapi
+    go build \
+    -ldflags="-w -s -X main.Version=${VERSION}" \
+    -o /bin/eeapi ./cmd/eeapi
 
-# Stage 2 — Runtime
-FROM alpine:3.19
 
+FROM alpine:3.21
 WORKDIR /app
-RUN mkdir -p /app/keysStore
 
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+RUN apk add --no-cache ca-certificates tzdata && \
+    adduser -D -u 1001 synx && \
+    mkdir -p /app/keysStore && \
+    chown -R synx:synx /app
+
 COPY --from=builder /bin/eeapi /bin/eeapi
 
+USER synx
+
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:8080/health || exit 1
+
 ENTRYPOINT ["/bin/eeapi"]

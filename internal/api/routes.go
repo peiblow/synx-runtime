@@ -25,6 +25,12 @@ func (s *Server) mount() http.Handler {
 		w.Write([]byte("OK"))
 	})
 
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	r.Route("/", func(r chi.Router) {
 		r.Use(auth.JWTMiddleware(s.clientPub))
 

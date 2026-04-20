@@ -60,13 +60,25 @@ type ExecPayload struct {
 	Function         string           `json:"function"`
 	Args             map[string]any   `json:"args"`
 	ContextId        string           `json:"context_id,omitempty"`
+	CallerID         string           `json:"caller_id"`
+}
+
+type TraceLog struct {
+	Step       string `json:"step"`
+	Msg        string `json:"msg"`
+	DurationMs int64  `json:"duration"`
+}
+
+type AuditLog struct {
+	Time  string `json:"time"`
+	Event string `json:"event"`
+	Actor string `json:"actor"`
 }
 
 type ExecResponse struct {
 	ArtifactHash string        `json:"artifact_hash"`
 	Function     string        `json:"function"`
 	Journal      []interface{} `json:"journal"`
-	ExecPrice    int64         `json:"exec_price"`
 	Timestamp    int64         `json:"timestamp"`
 }
 
