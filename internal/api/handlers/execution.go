@@ -16,6 +16,7 @@ type ExecApiResponse struct {
 	Success       bool          `json:"success"`
 	ContextId     string        `json:"contextId"`
 	Events        []interface{} `json:"events"`
+	Reason        string        `json:"reason,omitempty"`
 }
 
 func ExecHandler(svc service.ContractService) http.HandlerFunc {
@@ -35,6 +36,19 @@ func ExecHandler(svc service.ContractService) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "Failed to execute contract: "+err.Error(), http.StatusInternalServerError)
 			slog.Error("Failed to execute contract", "error", err)
+			return
+		}
+
+		if !result.Response.Success {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ExecApiResponse{
+				ExecutionHash: result.BlockHash,
+				Function:      req.Function,
+				Success:       false,
+				ContextId:     req.ContextId,
+				Events:        nil,
+				Reason:        result.FailedReason,
+			})
 			return
 		}
 

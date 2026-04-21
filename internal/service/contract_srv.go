@@ -56,9 +56,10 @@ type ArtifactMetadata struct {
 }
 
 type ExecuteResult struct {
-	BlockHash string
-	Events    []interface{}
-	Response  *swp.WireResponse
+	BlockHash    string
+	Events       []interface{}
+	Response     *swp.WireResponse
+	FailedReason string
 }
 
 type TraceStep struct {
@@ -318,10 +319,11 @@ func (s *contractService) ExecuteContract(ctx context.Context, contractID string
 	// ── retorno ───────────────────────────────────────────────────────────────
 	if !resp.Success {
 		return &ExecuteResult{
-			BlockHash: blockHash,
-			Events:    nil,
-			Response:  &swp.WireResponse{Type: swp.EXEC, ID: msg.ID, Success: false, Error: resp.Error},
-		}, fmt.Errorf("contract execution failed: %s", string(resp.Error))
+			BlockHash:    blockHash,
+			Events:       nil,
+			Response:     &swp.WireResponse{Type: swp.EXEC, ID: msg.ID, Success: false, Error: resp.Error},
+			FailedReason: failedReason,
+		}, nil
 	}
 
 	var respData swp.ExecResponse
